@@ -13,7 +13,6 @@ from tensorflow.keras import layers
 import time
 import pathlib
 import random
-
 from IPython import display
 
 print(tf.__version__)
@@ -22,17 +21,55 @@ print(tf.test.gpu_device_name())
 AUTOTUNE = tf.data.experimental.AUTOTUNE
 
 BUFFER_SIZE = 60000
-BATCH_SIZE = 256
+BATCH_SIZE = 16
 
-EPOCHS = 150
+EPOCHS = 50
 noise_dim = 100
 num_examples_to_generate = 16
 
-GRADIENT_PENALTY_WEIGHT = 10
+GRADIENT_PENALTY_WEIGHT = 0.5
 
-IMAGE_SIZE = 80
+IMAGE_SIZE = 128
 
 seed = tf.random.normal([num_examples_to_generate, noise_dim])
+
+class ResidualBlock(tf.keras.Model):
+    def __init__(self, filter_size, activation):
+        super(ResidualBlock, self).__init__()
+        filter_size
+
+        self.conv2a = tf.keras.layers.Conv2D(filter_size, (1, 1))
+        self.bn2a = tf.keras.layers.BatchNormalization()
+
+        self.conv2b = tf.keras.layers.Conv2D(filter_size, (3, 3), padding='same')
+        self.bn2b = tf.keras.layers.BatchNormalization()
+
+        self.conv2c = tf.keras.layers.Conv2D(filter_size*4, (1, 1))
+        self.bn2c = tf.keras.layers.BatchNormalization()
+
+        self.activation = None
+        if activation == "relu":
+            self.activation = tf.keras.layers.ReLU()
+        elif activation == "leaky_relu":
+            self.activation = tf.keras.layers.LeakyReLU()
+
+    def call(self, input_tensor, training=False):
+        x = self.conv2a(input_tensor)
+        x = self.bn2a(x, training=training)
+        x = tf.nn.relu(x)
+
+        x = self.conv2b(x)
+        x = self.bn2b(x, training=training)
+        x = tf.nn.relu(x)
+
+        x = self.conv2c(x)
+        x = self.bn2c(x, training=training)
+
+        x += input_tensor
+        x = self.activation(x, training=training)
+        return tf.nn.leaky_relu(x)
+
+
 
 def make_generator_model():
     model = tf.keras.Sequential()
@@ -42,17 +79,15 @@ def make_generator_model():
 
     model.add(layers.Reshape((IMAGE_SIZE//4, IMAGE_SIZE//4, 256)))
 
-    model.add(layers.Conv2DTranspose(128, (5, 5), strides=(1, 1), padding="same", use_bias=False))
-    assert model.output_shape == (None, IMAGE_SIZE//4, IMAGE_SIZE//4, 128)  #None is the batch size
-    model.add(layers.BatchNormalization())
-    model.add(layers.LeakyReLU())
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
 
-    model.add(layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding="same", use_bias=False))
+    model.add(layers.Conv2DTranspose(64, (4, 4), strides=(2, 2), padding="same", use_bias=False))
     assert model.output_shape == (None, IMAGE_SIZE//2, IMAGE_SIZE//2, 64)
     model.add(layers.BatchNormalization())
-    model.add(layers.LeakyReLU())
+    model.add(layers.ReLU())
 
-    model.add(layers.Conv2DTranspose(3, (5, 5), strides=(2, 2), padding="same", use_bias=False, activation="tanh"))
+    model.add(layers.Conv2DTranspose(3, (4, 4), strides=(2, 2), padding="same", use_bias=False, activation="tanh"))
     assert model.output_shape == (None, IMAGE_SIZE, IMAGE_SIZE, 3)
 
     return model
@@ -60,14 +95,14 @@ def make_generator_model():
 
 def make_discriminator_model():
     model = tf.keras.Sequential()
-    model.add(layers.Conv2D(64, (5, 5), strides=(2, 2), padding="same",
+
+    model.add(layers.Conv2D(128, (1, 1), strides=(1, 1), padding="same",
                                      input_shape=[IMAGE_SIZE, IMAGE_SIZE, 3]))
     model.add(layers.LeakyReLU())
     model.add(layers.Dropout(0.3))
 
-    model.add(layers.Conv2D(128, (5, 5), strides=(2, 2), padding="same"))
-    model.add(layers.LeakyReLU())
-    model.add(layers.Dropout(0.3))
+    model.add(ResidualBlock(32, "leaky_relu"))
+    model.add(ResidualBlock(32, "leaky_relu"))
 
     model.add(layers.Flatten())
     model.add(layers.Dense(1))
@@ -90,7 +125,7 @@ generator = make_generator_model()
 discriminator = make_discriminator_model()
 
 
-# This annotation causes the function to be "compiled".
+#This annotation causes the function to be "compiled".
 @tf.function
 def train_step(images):
     noise = tf.random.normal([BATCH_SIZE, noise_dim])
@@ -101,17 +136,14 @@ def train_step(images):
         real_output = discriminator(images, training=True)
         fake_output = discriminator(generated_images, training=True)
 
-        alpha = tf.random.normal([BATCH_SIZE, 1, 1, 1], 0.0, 1.0)
+        alpha = tf.random.normal([BATCH_SIZE, 1, 1, 1], 0.0, 1.0)   #Gradient penalty
         diff = images - generated_images
         interpolated = images + alpha * diff
 
         with tf.GradientTape() as gp_tape:
             gp_tape.watch(interpolated)
-            # 1. Get the discriminator output for this interpolated image.
             pred = discriminator(interpolated, training=True)
-        # 2. Calculate the gradients w.r.t to this interpolated image.
         grads = gp_tape.gradient(pred, [interpolated])[0]
-        # 3. Calculate the norm of the gradients.
         norm = tf.sqrt(tf.reduce_sum(tf.square(grads), axis=[1, 2, 3]))
         gp = tf.reduce_mean((norm - 1.0) ** 2)
 
@@ -132,19 +164,19 @@ def train(dataset, epochs):
         for image_batch in dataset:
             train_step(image_batch)
 
-        # Produce images for the GIF as we go
+        #Produce images for the GIF as we go
         display.clear_output(wait=True)
         generate_and_save_images(generator,
                                 epoch + 1,
                                 seed)
 
-        # Save the model every 15 epochs
-        if (epoch + 1) % 15 == 0:
+        #Save the model every 10 epochs
+        if (epoch + 1) % 10 == 0:
             checkpoint.save(file_prefix = checkpoint_prefix)
 
         print ("Time for epoch {} is {} sec".format(epoch + 1, time.time()-start))
 
-    # Generate after the final epoch
+    #Generate after the final epoch
     display.clear_output(wait=True)
     generate_and_save_images(generator,
                            epochs,
@@ -152,8 +184,8 @@ def train(dataset, epochs):
 
 
 def generate_and_save_images(model, epoch, test_input):
-    # Notice `training` is set to False.
-    # This is so all layers run in inference mode (batchnorm).
+    #Notice `training` is set to False.
+    #This is so all layers run in inference mode (batchnorm).
     predictions = model(test_input, training=False)
 
     dpi = 15
@@ -183,28 +215,21 @@ def load_and_preprocess_image(path):
 data_root = pathlib.Path("/content/drive/MyDrive/CelebASmall")
 
 all_image_paths = list(data_root.glob("*"))
-all_image_paths = all_image_paths[:2000]
+all_image_paths = all_image_paths[:3000]
 all_image_paths = [str(path) for path in all_image_paths]
 random.shuffle(all_image_paths)
 
 
-
 path_ds = tf.data.Dataset.from_tensor_slices(all_image_paths)
-image_ds = path_ds.map(load_and_preprocess_image, num_parallel_calls=AUTOTUNE)
+train_dataset = path_ds.map(load_and_preprocess_image, num_parallel_calls=AUTOTUNE)
 
-image_ds = image_ds.shuffle(buffer_size=len(all_image_paths))
-image_ds = image_ds.batch(BATCH_SIZE, drop_remainder=True)
-image_ds = image_ds.prefetch(buffer_size=AUTOTUNE)
+#Batch and shuffle the data
+train_dataset = train_dataset.shuffle(buffer_size=len(all_image_paths))
+train_dataset = train_dataset.batch(BATCH_SIZE, drop_remainder=True)
+train_dataset = train_dataset.prefetch(buffer_size=AUTOTUNE)
 
-train_images = image_ds
 
-
-# Batch and shuffle the data
-#train_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(BUFFER_SIZE).batch(BATCH_SIZE)
-
-train_dataset = image_ds
-
-# This method returns a helper function to compute cross entropy loss
+#This method returns a helper function to compute cross entropy loss
 cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
 
@@ -212,7 +237,7 @@ generator_optimizer = tf.keras.optimizers.Adam(0.0001)
 discriminator_optimizer = tf.keras.optimizers.Adam(0.0001)
 
 
-checkpoint_dir = "./training_checkpoints"
+checkpoint_dir = "/content/drive/MyDrive/Training_Checkpoints"
 checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
                                  discriminator_optimizer=discriminator_optimizer,
@@ -223,7 +248,7 @@ checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
 train(train_dataset, EPOCHS)
 checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
-# Display a single image using the epoch number
+#Display a single image using the epoch number
 def display_image(epoch_no):
   return PIL.Image.open("image_at_epoch_{:04d}.png".format(epoch_no))
 
@@ -239,3 +264,5 @@ with imageio.get_writer(anim_file, mode="I") as writer:
         writer.append_data(image)
     image = imageio.imread(filename)
     writer.append_data(image)
+
+
