@@ -29,9 +29,26 @@ num_examples_to_generate = 16
 
 GRADIENT_PENALTY_WEIGHT = 0.5
 
-IMAGE_SIZE = 128
+IMAGE_SIZE = 64
 
 seed = tf.random.normal([num_examples_to_generate, noise_dim])
+
+
+class PixelShuffler(tf.keras.Model):
+    def __init__(self, filter_size):
+        super(PixelShuffler, self).__init__()
+
+        self.conv = tf.keras.layers.Conv2D(filter_size, kernel_size=3, strides=1, padding="same")
+        self.activation = tf.keras.layers.Activation(tf.nn.relu)
+
+    def call(self, x):
+
+        x = self.conv(x)
+        x = tf.nn.depth_to_space(x, 2)
+        x = self.activation(x)
+
+        return x
+
 
 class ResidualBlock(tf.keras.Model):
     def __init__(self, filter_size, activation):
@@ -82,10 +99,15 @@ def make_generator_model():
     model.add(ResidualBlock(64, "relu"))
     model.add(ResidualBlock(64, "relu"))
 
-    model.add(layers.Conv2DTranspose(64, (4, 4), strides=(2, 2), padding="same", use_bias=False))
+    model.add(PixelShuffler(256))
     assert model.output_shape == (None, IMAGE_SIZE//2, IMAGE_SIZE//2, 64)
     model.add(layers.BatchNormalization())
     model.add(layers.ReLU())
+
+    #model.add(layers.Conv2DTranspose(64, (4, 4), strides=(2, 2), padding="same", use_bias=False))
+    #assert model.output_shape == (None, IMAGE_SIZE//2, IMAGE_SIZE//2, 64)
+    #model.add(layers.BatchNormalization())
+    #model.add(layers.ReLU())
 
     model.add(layers.Conv2DTranspose(3, (4, 4), strides=(2, 2), padding="same", use_bias=False, activation="tanh"))
     assert model.output_shape == (None, IMAGE_SIZE, IMAGE_SIZE, 3)
@@ -162,6 +184,7 @@ def train(dataset, epochs):
         start = time.time()
 
         for image_batch in dataset:
+
             train_step(image_batch)
 
         #Produce images for the GIF as we go
@@ -215,7 +238,7 @@ def load_and_preprocess_image(path):
 data_root = pathlib.Path("/content/drive/MyDrive/CelebASmall")
 
 all_image_paths = list(data_root.glob("*"))
-all_image_paths = all_image_paths[:3000]
+all_image_paths = all_image_paths[:4000]
 all_image_paths = [str(path) for path in all_image_paths]
 random.shuffle(all_image_paths)
 
@@ -233,8 +256,8 @@ train_dataset = train_dataset.prefetch(buffer_size=AUTOTUNE)
 cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
 
-generator_optimizer = tf.keras.optimizers.Adam(0.0001)
-discriminator_optimizer = tf.keras.optimizers.Adam(0.0001)
+generator_optimizer = tf.keras.optimizers.Adam(0.0002)
+discriminator_optimizer = tf.keras.optimizers.Adam(0.0002)
 
 
 checkpoint_dir = "/content/drive/MyDrive/Training_Checkpoints"
@@ -264,5 +287,4 @@ with imageio.get_writer(anim_file, mode="I") as writer:
         writer.append_data(image)
     image = imageio.imread(filename)
     writer.append_data(image)
-
 
