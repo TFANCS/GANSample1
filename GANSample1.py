@@ -23,7 +23,7 @@ AUTOTUNE = tf.data.experimental.AUTOTUNE
 BUFFER_SIZE = 60000
 BATCH_SIZE = 16
 
-EPOCHS = 50
+EPOCHS = 20
 noise_dim = 100
 num_examples_to_generate = 16
 
@@ -38,8 +38,8 @@ class PixelShuffler(tf.keras.Model):
     def __init__(self, filter_size):
         super(PixelShuffler, self).__init__()
 
-        self.conv = tf.keras.layers.Conv2D(filter_size, kernel_size=3, strides=1, padding="same")
-        self.activation = tf.keras.layers.Activation(tf.nn.relu)
+        self.conv = layers.Conv2D(filter_size, (3, 3), strides=1, padding="same")
+        self.activation = layers.Activation(tf.nn.relu)
 
     def call(self, x):
 
@@ -55,20 +55,20 @@ class ResidualBlock(tf.keras.Model):
         super(ResidualBlock, self).__init__()
         filter_size
 
-        self.conv2a = tf.keras.layers.Conv2D(filter_size, (1, 1))
-        self.bn2a = tf.keras.layers.BatchNormalization()
+        self.conv2a = layers.Conv2D(filter_size, (1, 1))
+        self.bn2a = layers.BatchNormalization()
 
-        self.conv2b = tf.keras.layers.Conv2D(filter_size, (3, 3), padding='same')
-        self.bn2b = tf.keras.layers.BatchNormalization()
+        self.conv2b = layers.Conv2D(filter_size, (3, 3), padding='same')
+        self.bn2b = layers.BatchNormalization()
 
-        self.conv2c = tf.keras.layers.Conv2D(filter_size*4, (1, 1))
-        self.bn2c = tf.keras.layers.BatchNormalization()
+        self.conv2c = layers.Conv2D(filter_size*4, (1, 1))
+        self.bn2c = layers.BatchNormalization()
 
         self.activation = None
         if activation == "relu":
-            self.activation = tf.keras.layers.ReLU()
+            self.activation = layers.ReLU()
         elif activation == "leaky_relu":
-            self.activation = tf.keras.layers.LeakyReLU()
+            self.activation = layers.LeakyReLU()
 
     def call(self, input_tensor, training=False):
         x = self.conv2a(input_tensor)
@@ -98,16 +98,17 @@ def make_generator_model():
 
     model.add(ResidualBlock(64, "relu"))
     model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
+    model.add(ResidualBlock(64, "relu"))
 
     model.add(PixelShuffler(256))
     assert model.output_shape == (None, IMAGE_SIZE//2, IMAGE_SIZE//2, 64)
     model.add(layers.BatchNormalization())
     model.add(layers.ReLU())
-
-    #model.add(layers.Conv2DTranspose(64, (4, 4), strides=(2, 2), padding="same", use_bias=False))
-    #assert model.output_shape == (None, IMAGE_SIZE//2, IMAGE_SIZE//2, 64)
-    #model.add(layers.BatchNormalization())
-    #model.add(layers.ReLU())
 
     model.add(layers.Conv2DTranspose(3, (4, 4), strides=(2, 2), padding="same", use_bias=False, activation="tanh"))
     assert model.output_shape == (None, IMAGE_SIZE, IMAGE_SIZE, 3)
@@ -118,13 +119,27 @@ def make_generator_model():
 def make_discriminator_model():
     model = tf.keras.Sequential()
 
-    model.add(layers.Conv2D(128, (1, 1), strides=(1, 1), padding="same",
+    model.add(layers.Conv2D(64, (1, 1), strides=(1, 1), padding="same",
                                      input_shape=[IMAGE_SIZE, IMAGE_SIZE, 3]))
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+
+    model.add(ResidualBlock(16, "leaky_relu"))
+    model.add(ResidualBlock(16, "leaky_relu"))
+
+    model.add(layers.Conv2D(128, (4, 4), strides=(2, 2), padding="same"))   
     model.add(layers.LeakyReLU())
     model.add(layers.Dropout(0.3))
 
     model.add(ResidualBlock(32, "leaky_relu"))
     model.add(ResidualBlock(32, "leaky_relu"))
+
+    model.add(layers.Conv2D(256, (4, 4), strides=(2, 2), padding="same"))   
+    model.add(layers.LeakyReLU())
+    model.add(layers.Dropout(0.3))
+
+    model.add(ResidualBlock(64, "leaky_relu"))
+    model.add(ResidualBlock(64, "leaky_relu"))
 
     model.add(layers.Flatten())
     model.add(layers.Dense(1))
@@ -145,7 +160,8 @@ def generator_loss(fake_output):
 
 generator = make_generator_model()
 discriminator = make_discriminator_model()
-
+generator.summary()
+discriminator.summary()
 
 #This annotation causes the function to be "compiled".
 @tf.function
@@ -238,7 +254,7 @@ def load_and_preprocess_image(path):
 data_root = pathlib.Path("/content/drive/MyDrive/CelebASmall")
 
 all_image_paths = list(data_root.glob("*"))
-all_image_paths = all_image_paths[:4000]
+all_image_paths = all_image_paths[:8000]
 all_image_paths = [str(path) for path in all_image_paths]
 random.shuffle(all_image_paths)
 
@@ -260,14 +276,14 @@ generator_optimizer = tf.keras.optimizers.Adam(0.0002)
 discriminator_optimizer = tf.keras.optimizers.Adam(0.0002)
 
 
-checkpoint_dir = "/content/drive/MyDrive/Training_Checkpoints"
+checkpoint_dir = "/content/drive/MyDrive/TrainingCheckpoints"
 checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 checkpoint = tf.train.Checkpoint(generator_optimizer=generator_optimizer,
                                  discriminator_optimizer=discriminator_optimizer,
                                  generator=generator,
                                  discriminator=discriminator)
 
-
+#checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 train(train_dataset, EPOCHS)
 checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
@@ -287,4 +303,3 @@ with imageio.get_writer(anim_file, mode="I") as writer:
         writer.append_data(image)
     image = imageio.imread(filename)
     writer.append_data(image)
-
